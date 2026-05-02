@@ -23,7 +23,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
-
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -71,6 +70,7 @@ static const char *role_to_str(esp_zb_nwk_device_type_t role)
 /* ZCL string attributes: first byte is the string length */
 #define MANUFACTURER_NAME           "\x10" "StuckAtPrototype"
 #define MODEL_IDENTIFIER            "\x07" "AirCube"
+#define SW_BUILD_ID_MAX_LEN         (sizeof(((esp_app_desc_t *)0)->version) - 1)
 
 /* ZCL char string: length byte + payload. Basic cluster SWBuildID max 16 chars (Zigbee 3.0). */
 #define SW_BUILD_ZCL_MAX_CHARS      16
