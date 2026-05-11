@@ -50,7 +50,7 @@ enum ENS_STATUS ens16x_get_device_status(void){
     ens16x_new_gpr_available = (i2c_data[0] & (1U << 0)) >> 0;
     ens16x_status = (i2c_data[0] >> 2) & 0x03;  // Extract bits 2-3 as 2-bit value
 
-    return i2c_data[0];
+    return ens16x_status;
 
 }
 

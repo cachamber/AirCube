@@ -6,6 +6,7 @@
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
 #include "led_color_lib.h"
+#include "esp_heap_caps.h"
 
 #include "led.h"
 #include "ens210.h"
@@ -15,6 +16,7 @@
 #include "button.h"
 #include "history.h"
 #include "zigbee.h"
+#include "reset_tracker.h"
 
 static const char *TAG = "main";
 
@@ -157,8 +159,11 @@ static void startup_animation(void) {
 void command_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Command task started");
+    esp_task_wdt_add(NULL);  // Add this task to watchdog monitoring
     
     while (1) {
+        esp_task_wdt_reset();  // Reset watchdog timer
+        
         // Process incoming commands
         serial_process_commands();
         
@@ -173,9 +178,22 @@ void sensor_task(void *pvParameters)
     ESP_LOGI(TAG, "Sensor task started");
 
     esp_task_wdt_add(NULL);
+    
+    // Track heap status periodically
+    static TickType_t last_heap_log = 0;
 
     while (1) {
         esp_task_wdt_reset();
+        
+        // Log heap status every 30 seconds
+        TickType_t current_tick = xTaskGetTickCount();
+        if ((current_tick - last_heap_log) >= pdMS_TO_TICKS(30000)) {
+            last_heap_log = current_tick;
+            uint32_t free_heap = esp_get_free_heap_size();
+            uint32_t min_free_heap = esp_get_minimum_free_heap_size();
+            ESP_LOGI(TAG, "Heap Status: Free=%u bytes, Min Free=%u bytes", 
+                     free_heap, min_free_heap);
+        }
 
         // Read ENS210 temperature and humidity
         ens210_read_envir();
@@ -258,7 +276,15 @@ void sensor_task(void *pvParameters)
 
 void app_main(void)
 {
+    // Print reset reason at startup
+    print_reset_info();
+    
     ESP_LOGI(TAG, "AirCube");
+    
+    // Log initial heap status
+    ESP_LOGI(TAG, "Heap: Free=%d bytes, Min Free=%d bytes", 
+             esp_get_free_heap_size(), 
+             esp_get_minimum_free_heap_size());
 
     // Configure power management
     // ESP32-H2 valid max frequencies: 96, 64, or 48 MHz. Min = XTAL = 32 MHz.

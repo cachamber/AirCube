@@ -102,7 +102,11 @@ esp_err_t i2c_driver_write(uint8_t device_addr, const uint8_t *data, size_t len)
     }
 
     // Transmit data (register address + data)
-    return i2c_master_transmit(dev_handle, data, len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    esp_err_t ret = i2c_master_transmit(dev_handle, data, len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C write failed for device 0x%02X: %s", device_addr, esp_err_to_name(ret));
+    }
+    return ret;
 }
 
 esp_err_t i2c_driver_read(uint8_t device_addr, const uint8_t *reg_addr, size_t reg_len, uint8_t *data, size_t data_len)
@@ -118,7 +122,11 @@ esp_err_t i2c_driver_read(uint8_t device_addr, const uint8_t *reg_addr, size_t r
     }
 
     // Transmit register address and receive data
-    return i2c_master_transmit_receive(dev_handle, reg_addr, reg_len, data, data_len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    esp_err_t ret = i2c_master_transmit_receive(dev_handle, reg_addr, reg_len, data, data_len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C read failed for device 0x%02X: %s", device_addr, esp_err_to_name(ret));
+    }
+    return ret;
 }
 
 void i2c_driver_deinit(void)
