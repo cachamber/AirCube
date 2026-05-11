@@ -1,0 +1,46 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - '**'
+
+jobs:
+  validate-semantic-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine commit range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "value=${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            before="${{ github.event.before }}"
+            after="${{ github.sha }}"
+
+            # New branch pushes may use all-zero before SHA.
+            if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
+              if git rev-parse "$after^" >/dev/null 2>&1; then
+                echo "value=$after^..$after" >> "$GITHUB_OUTPUT"
+              else
+                echo "value=$after" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "value=$before..$after" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Validate Conventional Commits
+        shell: bash
+        run: ./.github/scripts/validate_semantic_commits.sh "${{ steps.range.outputs.value }}"
