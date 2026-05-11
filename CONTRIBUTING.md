@@ -335,36 +335,7 @@ Open a [GitHub Issue](https://github.com/StuckAtPrototype/AirCube/issues) with:
 
 - **Firmware (C):** Follow the existing style -- 4-space indentation, `snake_case` for functions and variables, `UPPER_CASE` for defines and constants. Use ESP-IDF logging macros (`ESP_LOGI`, `ESP_LOGW`, `ESP_LOGE`).
 - **Python scripts:** Standard Python conventions. No strict formatter enforced, but keep it readable.
-- **Commit messages:** Use Conventional Commits. This is required for automated firmware versioning in GitHub Actions.
-
-### Semantic commit format (required)
-
-Use this format:
-
-`type(scope): summary`
-
-Examples:
-
-- `feat(zigbee): add software build id reporting`
-- `fix(i2c): avoid bus init race during boot`
-- `feat(api)!: remove legacy history command`
-
-Allowed types: `feat`, `fix`, `perf`, `refactor`, `build`, `ci`, `docs`, `style`, `test`, `chore`, `revert`
-
-Version bump rules used by CI:
-
-- `feat`: minor bump (`X.Y.Z` -> `X.(Y+1).0`)
-- `fix` and other allowed types: patch bump (`X.Y.Z` -> `X.Y.(Z+1)`)
-- `!` or `BREAKING CHANGE`: major bump (`X.Y.Z` -> `(X+1).0.0`)
-
-### GitHub Actions firmware release flow
-
-- Any push to a non-`master` branch builds firmware and updates a prerelease tagged `dev-<branch>`.
-- The firmware in dev prereleases is versioned as `<next-semver>-dev.<run_number>`.
-- Pushes to `master` build firmware and publish a stable release tagged `v<semver>`.
-- Stable releases are marked as the repository's latest release.
-
-The firmware version embedded in the binary comes from `firmware/version.txt`, which CI rewrites at build time using semantic commit history.
+- **Commit messages:** Short summary line, imperative mood (e.g., "Add history CSV export command").
 
 ### Ideas for contributions
 
