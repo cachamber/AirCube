@@ -83,6 +83,7 @@ static volatile bool s_pairing    = false;
 static volatile bool s_rejoining  = false;
 static volatile bool s_post_join_diag_done = false;
 static TickType_t    s_pairing_start = 0;
+static TickType_t    s_last_join_tick = 0;       /* When we most recently joined         */
 static uint32_t      s_rejoin_backoff_ms = 0;
 static uint8_t       s_sw_build_id[SW_BUILD_ZCL_BUF_LEN];
 
@@ -90,6 +91,16 @@ static uint8_t       s_sw_build_id[SW_BUILD_ZCL_BUF_LEN];
 #define REJOIN_BACKOFF_INIT_MS  1000    /* First rejoin attempt after 1 s  */
 #define REJOIN_BACKOFF_MAX_MS   300000  /* Cap backoff at 5 minutes        */
 #define STARTUP_REPORT_DELAY_MS 1000    /* Allow coordinator to finish startup */
+
+/* Flap watchdog: if we have to rejoin too many times in a short window,
+ * the radio link is unstable enough that the ZBOSS MAC layer can hit an
+ * internal assertion (mac/mac.c). Reboot proactively before that happens. */
+#define REJOIN_FLAP_WINDOW_MS   300000  /* 5-minute sliding window         */
+#define REJOIN_FLAP_LIMIT       10      /* Rejoins allowed inside window   */
+#define STABLE_UPTIME_MS        60000   /* Connected for >= this           */
+                                        /*   = considered "stable"         */
+static TickType_t s_flap_window_start  = 0;
+static uint16_t   s_flap_rejoin_count  = 0;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -148,11 +159,41 @@ static void post_join_diag_cb(uint8_t unused);
 
 static void schedule_rejoin(void)
 {
+    TickType_t now = xTaskGetTickCount();
+
+    /* Sliding-window flap detector. If the radio link is so bad that we
+     * keep cycling parent-link-failure -> rejoin, the ZBOSS MAC layer
+     * eventually asserts in mac/mac.c. Reboot ourselves first so we come
+     * back clean instead of crashing inside the stack. */
+    if (s_flap_rejoin_count == 0 ||
+        (now - s_flap_window_start) > pdMS_TO_TICKS(REJOIN_FLAP_WINDOW_MS)) {
+        s_flap_window_start = now;
+        s_flap_rejoin_count = 0;
+    }
+    s_flap_rejoin_count++;
+    if (s_flap_rejoin_count > REJOIN_FLAP_LIMIT) {
+        ESP_LOGE(TAG, "Rejoin flap watchdog tripped (%u rejoins in %u ms) – rebooting",
+                 (unsigned)s_flap_rejoin_count,
+                 (unsigned)REJOIN_FLAP_WINDOW_MS);
+        esp_restart();
+    }
+
     if (!s_rejoining) {
         s_rejoining = true;
-        s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+        /* Only reset backoff if we previously had a stable connection.
+         * Otherwise keep growing it so a flapping parent doesn't make us
+         * hammer NETWORK_STEERING every second. */
+        if (s_last_join_tick != 0 &&
+            (now - s_last_join_tick) >= pdMS_TO_TICKS(STABLE_UPTIME_MS)) {
+            s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+        } else if (s_rejoin_backoff_ms == 0) {
+            s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+        }
     }
-    ESP_LOGW(TAG, "Scheduling rejoin in %lu ms", (unsigned long)s_rejoin_backoff_ms);
+    ESP_LOGW(TAG, "Scheduling rejoin in %lu ms (flap %u/%u)",
+             (unsigned long)s_rejoin_backoff_ms,
+             (unsigned)s_flap_rejoin_count,
+             (unsigned)REJOIN_FLAP_LIMIT);
     esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
                            ESP_ZB_BDB_MODE_NETWORK_STEERING, s_rejoin_backoff_ms);
     s_rejoin_backoff_ms *= 2;
@@ -284,7 +325,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 }
             } else {
                 ESP_LOGI(TAG, "Device rebooted – already commissioned");
-                s_connected = true;
+                s_connected      = true;
+                s_rejoining      = false;
+                s_last_join_tick = xTaskGetTickCount();
+                s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
                 esp_zb_scheduler_alarm((esp_zb_callback_t)report_startup_brightness_cb,
                                        0, STARTUP_REPORT_DELAY_MS);
             }
@@ -310,6 +354,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             s_connected  = true;
             s_pairing    = false;
             s_rejoining  = false;
+            s_last_join_tick = xTaskGetTickCount();
             s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
             esp_zb_scheduler_alarm((esp_zb_callback_t)report_startup_brightness_cb,
                                    0, STARTUP_REPORT_DELAY_MS);
@@ -366,9 +411,11 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_BDB_SIGNAL_TC_REJOIN_DONE:
         if (err_status == ESP_OK) {
             ESP_LOGI(TAG, "Trust Center rejoin succeeded");
-            s_connected  = true;
-            s_rejoining  = false;
-            s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+            s_connected      = true;
+            s_rejoining      = false;
+            s_last_join_tick = xTaskGetTickCount();
+            /* Backoff stays as-is; schedule_rejoin() will reset only after
+             * a stable uptime. */
         } else {
             ESP_LOGW(TAG, "Trust Center rejoin failed (%s)", esp_err_to_name(err_status));
             s_connected = false;
