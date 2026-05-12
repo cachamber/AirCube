@@ -2,8 +2,9 @@
  * @file zigbee.c
  * @brief Zigbee integration for AirCube
  *
- * Implements a Zigbee End Device that exposes environmental sensor data
- * via standard and custom ZCL clusters.
+ * Implements a Zigbee Router that exposes environmental sensor data
+ * via standard and custom ZCL clusters, and relays messages for other
+ * Zigbee devices on the network.
  *
  * Clusters on Endpoint 10:
  *   - Basic (0x0000)             : Device identity, SWBuildID (firmware version)
@@ -26,14 +27,30 @@
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
-#include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_zigbee_core.h"
+#include "nwk/esp_zigbee_nwk.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 
 static const char *TAG = "zigbee";
+
+static const char *role_to_str(esp_zb_nwk_device_type_t role)
+{
+    switch (role) {
+    case ESP_ZB_DEVICE_TYPE_COORDINATOR:
+        return "coordinator";
+    case ESP_ZB_DEVICE_TYPE_ROUTER:
+        return "router";
+    case ESP_ZB_DEVICE_TYPE_ED:
+        return "end-device";
+    case ESP_ZB_DEVICE_TYPE_NONE:
+        return "none";
+    default:
+        return "unknown";
+    }
+}
 
 /* ── Endpoint & cluster configuration ────────────────────────────────── */
 
@@ -64,16 +81,16 @@ static const char *TAG = "zigbee";
 static volatile bool s_connected  = false;
 static volatile bool s_pairing    = false;
 static volatile bool s_rejoining  = false;
+static volatile bool s_post_join_diag_done = false;
 static TickType_t    s_pairing_start = 0;
 static TickType_t    s_last_join_tick = 0;       /* When we most recently joined         */
 static uint32_t      s_rejoin_backoff_ms = 0;
 static uint8_t       s_sw_build_id[SW_BUILD_ZCL_BUF_LEN];
-static uint8_t       s_init_fail_count = 0;
-#define INIT_FAIL_MAX  5  /* Reboot after this many consecutive init failures */
 
 #define PAIRING_TIMEOUT_MS      60000   /* Auto-cancel pairing after 60 s */
 #define REJOIN_BACKOFF_INIT_MS  1000    /* First rejoin attempt after 1 s  */
 #define REJOIN_BACKOFF_MAX_MS   300000  /* Cap backoff at 5 minutes        */
+#define STARTUP_REPORT_DELAY_MS 1000    /* Allow coordinator to finish startup */
 
 /* Flap watchdog: if we have to rejoin too many times in a short window,
  * the radio link is unstable enough that the ZBOSS MAC layer can hit an
@@ -111,6 +128,11 @@ static void init_sw_build_id(void)
     memcpy(&s_sw_build_id[1], app_desc->version, n);
 }
 
+static float current_brightness_percent(void)
+{
+    return led_get_intensity() * 100.0f;
+}
+
 static void report_attr(uint16_t cluster_id, uint16_t attr_id)
 {
     esp_zb_zcl_report_attr_cmd_t report_cmd = { 0 };
@@ -130,6 +152,8 @@ static void report_attr(uint16_t cluster_id, uint16_t attr_id)
 /* ── Forward declarations ─────────────────────────────────────────────── */
 
 static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask);
+static void report_startup_brightness_cb(uint8_t unused);
+static void post_join_diag_cb(uint8_t unused);
 
 /* ── Rejoin helper (exponential backoff) ──────────────────────────────── */
 
@@ -207,19 +231,14 @@ static bool consume_pairing_flag(void)
     return found;
 }
 
-/* ── ZED configuration macros (matching Espressif examples) ──────────── */
+/* ── Router configuration macros (matching Espressif examples) ───────── */
 
-/* keep_alive: how often (ms) the ZED data-polls its parent.
- * 3 s is aggressive: two missed polls and the NWK layer raises
- * PARENT_LINK_FAILURE. On marginal RF that triggers a flap loop and
- * eventually a MAC assertion. 7 s gives the link more headroom. */
-#define AIRCUBE_ZED_CONFIG()                                \
+#define AIRCUBE_ZR_CONFIG()                                 \
     {                                                       \
-        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,               \
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER,           \
         .install_code_policy = false,                       \
-        .nwk_cfg.zed_cfg = {                                \
-            .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_64MIN,    \
-            .keep_alive = 7000,                             \
+        .nwk_cfg.zczr_cfg = {                               \
+            .max_children = 10,                             \
         },                                                  \
     }
 
@@ -241,6 +260,41 @@ static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
                         TAG, "Failed to start Zigbee commissioning");
 }
 
+static void post_join_diag_cb(uint8_t unused)
+{
+    (void)unused;
+
+    if (s_post_join_diag_done) {
+        return;
+    }
+    s_post_join_diag_done = true;
+
+    ESP_LOGI(TAG, "Post-join diag: role=%s rx_on_when_idle=%d max_children=%u",
+             role_to_str(esp_zb_get_network_device_role()),
+             esp_zb_get_rx_on_when_idle(),
+             esp_zb_nwk_get_max_children());
+
+    esp_zb_nwk_info_iterator_t it = ESP_ZB_NWK_INFO_ITERATOR_INIT;
+    esp_zb_nwk_neighbor_info_t nbr;
+    int count = 0;
+    while (esp_zb_nwk_get_next_neighbor(&it, &nbr) == ESP_OK) {
+        count++;
+        ESP_LOGI(TAG,
+                 "Neighbor[%d]: short=0x%04x type=%u rel=%u rx_idle=%u depth=%u lqi=%u rssi=%d ieee=%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                 count,
+                 nbr.short_addr,
+                 nbr.device_type,
+                 nbr.relationship,
+                 nbr.rx_on_when_idle,
+                 nbr.depth,
+                 nbr.lqi,
+                 nbr.rssi,
+                 nbr.ieee_addr[7], nbr.ieee_addr[6], nbr.ieee_addr[5], nbr.ieee_addr[4],
+                 nbr.ieee_addr[3], nbr.ieee_addr[2], nbr.ieee_addr[1], nbr.ieee_addr[0]);
+    }
+    ESP_LOGI(TAG, "Post-join diag: neighbor_count=%d", count);
+}
+
 /* ── Signal handler (called by the Zigbee stack) ─────────────────────── */
 
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
@@ -258,7 +312,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
         if (err_status == ESP_OK) {
-            s_init_fail_count = 0;
             ESP_LOGI(TAG, "Device started up in%s factory-reset mode",
                      esp_zb_bdb_is_factory_new() ? "" : " non");
             if (esp_zb_bdb_is_factory_new()) {
@@ -276,16 +329,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 s_rejoining      = false;
                 s_last_join_tick = xTaskGetTickCount();
                 s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+                esp_zb_scheduler_alarm((esp_zb_callback_t)report_startup_brightness_cb,
+                                       0, STARTUP_REPORT_DELAY_MS);
             }
         } else {
-            s_init_fail_count++;
-            if (s_init_fail_count >= INIT_FAIL_MAX) {
-                ESP_LOGE(TAG, "Zigbee init failed %d times – rebooting to reset radio",
-                         s_init_fail_count);
-                esp_restart();
-            }
-            ESP_LOGI(TAG, "Waiting for coordinator (%s), attempt %d/%d, retrying",
-                     esp_err_to_name(err_status), s_init_fail_count, INIT_FAIL_MAX);
+            ESP_LOGI(TAG, "Waiting for coordinator (%s), retrying",
+                     esp_err_to_name(err_status));
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
                                    ESP_ZB_BDB_MODE_INITIALIZATION, 1000);
         }
@@ -302,13 +351,15 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      extended_pan_id[1], extended_pan_id[0],
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(),
                      esp_zb_get_short_address());
-            s_connected     = true;
-            s_pairing       = false;
-            s_rejoining     = false;
+            s_connected  = true;
+            s_pairing    = false;
+            s_rejoining  = false;
             s_last_join_tick = xTaskGetTickCount();
-            /* Note: we deliberately don't reset s_rejoin_backoff_ms here.
-             * schedule_rejoin() will reset it only after we've been
-             * connected long enough to count as a stable uptime. */
+            s_rejoin_backoff_ms = REJOIN_BACKOFF_INIT_MS;
+            esp_zb_scheduler_alarm((esp_zb_callback_t)report_startup_brightness_cb,
+                                   0, STARTUP_REPORT_DELAY_MS);
+            s_post_join_diag_done = false;
+            esp_zb_scheduler_alarm((esp_zb_callback_t)post_join_diag_cb, 0, 2000);
         } else {
             if (s_pairing &&
                 (xTaskGetTickCount() - s_pairing_start) < pdMS_TO_TICKS(PAIRING_TIMEOUT_MS)) {
@@ -334,6 +385,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         uint8_t leave_type = leave_params ? leave_params->leave_type : 0xFF;
         ESP_LOGW(TAG, "Left network (leave_type: 0x%x)", leave_type);
         s_connected = false;
+        s_post_join_diag_done = false;
         if (!s_pairing) {
             schedule_rejoin();
         }
@@ -449,7 +501,7 @@ static esp_zb_cluster_list_t *create_cluster_list(void)
     /* ---- Analog Output cluster 0x000D (brightness, writable) ---- */
     esp_zb_analog_output_cluster_cfg_t ao_cfg = {
         .out_of_service = false,
-        .present_value  = 60.0f,
+        .present_value  = current_brightness_percent(),
         .status_flags   = 0,
     };
     esp_zb_attribute_list_t *ao_cluster =
@@ -549,6 +601,24 @@ static void configure_reporting(void)
     };
     esp_zb_zcl_update_reporting_info(&aqi_rpt);
 
+    /* Brightness: report every 60s max, or on 5.0% change */
+    esp_zb_zcl_reporting_info_t brightness_rpt = {
+        .direction          = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+        .ep                 = AIRCUBE_ENDPOINT,
+        .cluster_id         = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT,
+        .cluster_role       = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .dst.profile_id     = ESP_ZB_AF_HA_PROFILE_ID,
+        .u.send_info.min_interval     = 1,
+        .u.send_info.max_interval     = 60,
+        .u.send_info.def_min_interval = 1,
+        .u.send_info.def_max_interval = 60,
+        .attr_id            = ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID,
+        .manuf_code         = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
+    };
+    float brightness_delta = 5.0f;
+    memcpy(&brightness_rpt.u.send_info.delta, &brightness_delta, sizeof(float));
+    esp_zb_zcl_update_reporting_info(&brightness_rpt);
+
 }
 
 static void apply_zigbee_tx_power(void)
@@ -601,9 +671,18 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 
 static void esp_zb_task(void *pvParameters)
 {
-    /* Initialize Zigbee stack as End Device */
-    esp_zb_cfg_t zb_nwk_cfg = AIRCUBE_ZED_CONFIG();
+    /* Initialize Zigbee stack as Router */
+    esp_zb_cfg_t zb_nwk_cfg = AIRCUBE_ZR_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
+
+    /* Enforce router runtime behavior explicitly for unambiguous node descriptor. */
+    ESP_ERROR_CHECK(esp_zb_set_network_device_role(ESP_ZB_DEVICE_TYPE_ROUTER));
+    esp_zb_set_rx_on_when_idle(true);
+    ESP_ERROR_CHECK(esp_zb_nwk_set_max_children(10));
+    ESP_LOGI(TAG, "Runtime Zigbee role: %s, rx_on_when_idle=%d, max_children=%u",
+             role_to_str(esp_zb_get_network_device_role()),
+             esp_zb_get_rx_on_when_idle(),
+             esp_zb_nwk_get_max_children());
 
     /* Create endpoint 10 with all our clusters */
     esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
@@ -668,11 +747,8 @@ void zigbee_update_sensors(float temp_c, float humidity, int eco2, int etvoc, in
     uint16_t zb_etvoc = (uint16_t)etvoc;
     uint16_t zb_aqi   = (uint16_t)aqi;
 
-    /* Bounded lock: avoid blocking sensor_task forever if the stack is stuck */
-    if (!esp_zb_lock_acquire(pdMS_TO_TICKS(2000))) {
-        ESP_LOGW(TAG, "Zigbee lock timeout in update_sensors – skipping this cycle");
-        return;
-    }
+    /* Lock the Zigbee stack while writing attributes */
+    esp_zb_lock_acquire(portMAX_DELAY);
 
     /* Standard clusters */
     esp_zb_zcl_set_attribute_val(AIRCUBE_ENDPOINT,
@@ -719,6 +795,33 @@ bool zigbee_is_connected(void)
     return s_connected;
 }
 
+static void report_startup_brightness_cb(uint8_t unused)
+{
+    (void)unused;
+
+    float zb_brightness = current_brightness_percent();
+    esp_zb_zcl_set_attribute_val(AIRCUBE_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID, &zb_brightness, false);
+    report_attr(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT,
+                ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID);
+}
+
+void zigbee_report_brightness(void)
+{
+    if (!s_connected) {
+        return;
+    }
+    float zb_brightness = current_brightness_percent();
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(AIRCUBE_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID, &zb_brightness, false);
+    report_attr(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT,
+                ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID);
+    esp_zb_lock_release();
+}
+
 void zigbee_start_pairing(void)
 {
     ESP_LOGI(TAG, "Manual pairing requested");
@@ -726,11 +829,7 @@ void zigbee_start_pairing(void)
     s_connected     = false;
     s_pairing_start = xTaskGetTickCount();
 
-    if (!esp_zb_lock_acquire(pdMS_TO_TICKS(5000))) {
-        ESP_LOGE(TAG, "Zigbee lock timeout in start_pairing – aborting");
-        s_pairing = false;
-        return;
-    }
+    esp_zb_lock_acquire(portMAX_DELAY);
     if (esp_zb_bdb_is_factory_new()) {
         ESP_LOGI(TAG, "Already factory-new – starting network steering directly");
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);

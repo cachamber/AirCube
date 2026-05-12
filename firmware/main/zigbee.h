@@ -8,6 +8,9 @@
  * for air quality metrics, and the standard Analog Output cluster (0x000D)
  * for LED brightness control.
  *
+ * The device operates as a Zigbee Router, allowing it to relay messages
+ * for other Zigbee devices and extend network range.
+ *
  * @author StuckAtPrototype, LLC
  */
 
@@ -24,15 +27,17 @@ extern "C" {
 /**
  * @brief Initialize the Zigbee stack and register the AirCube endpoint.
  *
- * Configures the ESP32-H2 as a Zigbee End Device with:
+ * Configures the ESP32-H2 as a Zigbee Router with:
  *   - Temperature Measurement cluster (0x0402)
  *   - Relative Humidity cluster (0x0405)
  *   - Custom cluster (0xFC01) for eCO2, eTVOC, AQI
  *   - Analog Output cluster (0x000D) for LED brightness
  *
- * On first boot (factory-new), the stack stays idle until the user
- * triggers pairing via a long button press.  On subsequent boots the
- * device reconnects to its previously-joined network automatically.
+ * As a router the device stays on permanently, relaying messages for
+ * other Zigbee devices and extending network coverage.  On first boot
+ * (factory-new) the stack stays idle until the user triggers pairing
+ * via a long button press.  On subsequent boots the device reconnects
+ * to its previously-joined network automatically.
  * Must be called after nvs_flash_init().
  */
 void zigbee_init(void);
@@ -81,6 +86,14 @@ void zigbee_start_pairing(void);
  * @return true if actively searching for a network, false otherwise
  */
 bool zigbee_is_pairing(void);
+
+/**
+ * @brief Immediately report the current LED brightness to the Zigbee coordinator.
+ *
+ * Writes the current brightness to the Analog Output cluster and sends
+ * an unsolicited attribute report. Safe to call from any task context.
+ */
+void zigbee_report_brightness(void);
 
 #ifdef __cplusplus
 }
