@@ -26,8 +26,16 @@ module.exports = {
       {
         assets: [
           {
-            path: "out/*.bin",
-            label: "Firmware binary",
+            path: "out/AirCube*.bin",
+            label: "AirCube Firmware",
+          },
+          {
+            path: "out/bootloader*.bin",
+            label: "Bootloader",
+          },
+          {
+            path: "out/partition-table*.bin",
+            label: "Partition Table",
           },
         ],
       },

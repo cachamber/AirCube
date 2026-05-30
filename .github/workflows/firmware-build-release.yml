@@ -4,6 +4,10 @@ name: Firmware Build and Release
   push:
     branches:
       - '**'
+    paths:
+      - 'firmware/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
 
 permissions:
   contents: write
