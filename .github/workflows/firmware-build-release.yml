@@ -17,14 +17,14 @@ jobs:
       should_release: ${{ steps.semver.outputs.should_release }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install semantic-release dependencies
         shell: bash
@@ -91,14 +91,14 @@ jobs:
     if: ${{ needs.prepare-version.outputs.should_release == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install semantic-release dependencies
         shell: bash
@@ -107,7 +107,7 @@ jobs:
           npm install --no-audit --no-fund
 
       - name: Download firmware artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: firmware-${{ needs.prepare-version.outputs.release_version }}
           path: out
