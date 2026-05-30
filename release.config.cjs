@@ -1,4 +1,8 @@
 const branchName = process.env.GITHUB_REF_NAME || "master";
+const prereleaseId = branchName
+  .toLowerCase()
+  .replace(/[^a-z0-9-]+/g, "-")
+  .replace(/^-+|-+$/g, "") || "dev";
 
 const branches =
   branchName === "master"
@@ -7,7 +11,7 @@ const branches =
         "master",
         {
           name: branchName,
-          prerelease: "dev",
+          prerelease: prereleaseId,
         },
       ];
 

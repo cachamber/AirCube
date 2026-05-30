@@ -1,0 +1,68 @@
+name: Reusable Firmware Build
+
+"on":
+  workflow_call:
+    inputs:
+      project_version:
+        description: "Optional PROJECT_VER to pass to idf.py"
+        required: false
+        type: string
+        default: ""
+      upload_artifact:
+        description: "Upload firmware binaries as an artifact"
+        required: false
+        type: boolean
+        default: false
+      artifact_name:
+        description: "Artifact name used when upload_artifact is true"
+        required: false
+        type: string
+        default: firmware
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ format('espressif/idf:{0}', vars.ESP_IDF_TAG || 'v5.5.2') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize ESP-IDF environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          echo "/opt/esp/idf/tools:$PATH"
+          idf.py --version
+
+      - name: Build firmware (ESP32-H2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          cd firmware
+          idf.py set-target esp32h2
+          if [[ -n "${{ inputs.project_version }}" ]]; then
+            idf.py -DPROJECT_VER="${{ inputs.project_version }}" build
+          else
+            idf.py build
+          fi
+
+      - name: Stage release artifacts
+        if: ${{ inputs.upload_artifact }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+
+          cp firmware/build/AirCube.bin "out/AirCube_firmware_v${{ inputs.project_version }}.bin"
+          cp firmware/build/bootloader/bootloader.bin "out/bootloader_v${{ inputs.project_version }}.bin"
+          cp firmware/build/partition_table/partition-table.bin "out/partition-table_v${{ inputs.project_version }}.bin"
+
+      - name: Upload firmware artifacts
+        if: ${{ inputs.upload_artifact }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: out/*
