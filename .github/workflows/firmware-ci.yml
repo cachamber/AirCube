@@ -4,6 +4,10 @@ name: Firmware CI
   pull_request:
     branches:
       - master
+    paths:
+      - 'firmware/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
 
 jobs:
   build:
