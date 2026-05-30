@@ -26,3 +26,6 @@ scripts/build/
 
 # Local release staging
 releases/
+
+# VS Code
+.vscode/
