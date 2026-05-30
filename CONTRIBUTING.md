@@ -114,6 +114,19 @@ Press `Ctrl+]` to exit the IDF monitor.
 | Stale build artifacts | `idf.py fullclean` then `idf.py build` |
 | Flash fails | Hold BOOT, press RESET, release BOOT to enter download mode |
 
+### CI/CD variable for ESP-IDF container tag
+
+The firmware workflows read the ESP-IDF Docker tag from `ESP_IDF_TAG`.
+
+- Workflow usage: `.github/workflows/firmware-build-reusable.yml` (`vars.ESP_IDF_TAG`, fallback `v5.5.2`).
+- Variable name: `ESP_IDF_TAG`
+- Example value: `v5.5.2`
+
+If your pipeline is running in GitHub Actions, set it here:
+
+- GitHub repository -> **Settings** -> **Secrets and variables** -> **Actions** -> **Variables**
+- Add variable `ESP_IDF_TAG`.
+
 ---
 
 ## Firmware Architecture
