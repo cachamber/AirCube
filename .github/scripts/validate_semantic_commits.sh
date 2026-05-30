@@ -8,7 +8,7 @@ if [[ -z "$RANGE" ]]; then
 fi
 
 # Conventional Commit subset used for automated semantic versioning.
-semantic_re='^(feat|fix|perf|refactor|build|ci|docs|style|test|chore|revert)(\([a-z0-9._/-]+\))?(!)?: .+'
+semantic_re='^(feat|fix|perf|refactor|build|ci|docs|style|test|chore|revert)(\([A-Za-z0-9._/-]+\))?(!)?: .+'
 
 invalid=0
 
