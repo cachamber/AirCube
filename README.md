@@ -146,6 +146,21 @@ Latest release: [GitHub Releases](https://github.com/StuckAtPrototype/AirCube/re
 
 ---
 
+## CI Configuration
+
+The firmware CI uses the `ESP_IDF_TAG` variable to choose the ESP-IDF container tag.
+
+- Variable name: `ESP_IDF_TAG`
+- Example value: `v5.5.2`
+- Used by: `.github/workflows/firmware-build-reusable.yml`
+
+Set it in GitHub Actions:
+
+- Repository -> Settings -> Secrets and variables -> Actions -> Variables
+- Add variable `ESP_IDF_TAG`.
+
+---
+
 ## LED Reference
 
 ### Firmware 1.5.0 and above (current)
